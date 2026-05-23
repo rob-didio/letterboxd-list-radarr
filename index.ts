@@ -27,19 +27,23 @@ app.get("/", (_, res) => res.send("Use letterboxd.com path as path here."));
 app.get("/favicon.ico", (_, res) => res.status(404).send());
 
 app.get(/(.*)/, async (req, res) => {
+    const slug = normalizeSlug(req.params[0]);
     const chunk = sendChunkedJson(res);
 
-    // Abort fetching on client close
-    let isConnectionOpen = true;
+    // Track client connection state for logging only. We intentionally keep
+    // fetching after the client disconnects so per-movie results land in the
+    // Redis cache and the next retry (Radarr re-polls aggressively) finds them.
+    let isClientConnected = true;
     let isFinished = false;
     req.connection.once("close", () => {
-        isConnectionOpen = false;
+        isClientConnected = false;
         if (!isFinished) {
-            appLogger.warn("Client closed connection before finish.");
+            appLogger.warn(
+                `Client closed connection before finish for ${slug} — continuing fetch in background to warm cache.`
+            );
         }
     });
 
-    const slug = normalizeSlug(req.params[0]);
     const limit = req.query.limit
         ? Number.parseInt(req.query.limit)
         : undefined;
@@ -63,7 +67,6 @@ app.get(/(.*)/, async (req, res) => {
         isFinished = true;
         appLogger.error(`Failed to fetch posters for ${slug} - ${e?.message}`);
         chunk.fail(404, e?.message);
-        isConnectionOpen = false;
         return;
     }
 
@@ -73,7 +76,6 @@ app.get(/(.*)/, async (req, res) => {
             404,
             "List is empty or letterboxd page structure has changed so we can't fetch the list anymore. To disable this error, set ?errorOnEmpty=false"
         );
-        isConnectionOpen = false;
         return;
     }
 
@@ -85,25 +87,25 @@ app.get(/(.*)/, async (req, res) => {
         if (!movie.tmdb) {
             return;
         }
+        // chunk.push is a no-op once res.writable flips false, so this is safe
+        // to keep calling after the client disconnects.
         chunk.push(transformLetterboxdMovieToRadarr(movie));
     };
 
     try {
-        await getMoviesDetailCached(
-            movieSlugs,
-            7,
-            onMovie,
-            () => !isConnectionOpen
-        );
+        await getMoviesDetailCached(movieSlugs, 7, onMovie);
     } catch (e: any) {
         appLogger.error(`Failed to fetch movies for ${slug} - ${e?.message}`);
         chunk.fail(404, e?.message);
-        isConnectionOpen = false;
         return;
     }
 
     isFinished = true;
-    chunk.end();
+    if (isClientConnected) {
+        chunk.end();
+    } else {
+        appLogger.info(`Background fetch for ${slug} finished; cache warmed.`);
+    }
 });
 
 process.on("unhandledRejection", (reason) => {

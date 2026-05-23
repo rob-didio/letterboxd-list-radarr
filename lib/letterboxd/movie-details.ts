@@ -1,9 +1,12 @@
 import pLimit from "p-limit";
 import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
+import { InflightDedup } from "../cache/inflight";
 import { logger } from "../logger";
 
 const moviesLogger = logger.child({ module: "MoviesDetails" });
+
+const inflightMovieDetail = new InflightDedup<LetterboxdMovieDetails>();
 
 export interface LetterboxdMovieDetails {
     slug: string;
@@ -16,8 +19,7 @@ export interface LetterboxdMovieDetails {
 export const getMoviesDetailCached = async (
     slugs: string[],
     concurrencyLimit: number = 7,
-    onDetail?: (movie: LetterboxdMovieDetails) => void,
-    shouldCancel?: () => boolean
+    onDetail?: (movie: LetterboxdMovieDetails) => void
 ) => {
     // we have to remove empty entries to prevent infinite loading
     slugs = slugs.filter((slug) => slug);
@@ -25,11 +27,6 @@ export const getMoviesDetailCached = async (
     const movies = await Promise.all(
         slugs.map(async (slug) => {
             const detail = await limit(async () => {
-                // Cancel running operations in case client connection closed.
-                if (shouldCancel && shouldCancel()) {
-                    return;
-                }
-
                 try {
                     return await getCachedMovieDetail(slug);
                 } catch (e: any) {
@@ -63,12 +60,12 @@ export const getCachedMovieDetail = async (slug: string) => {
         return await cache.get<LetterboxdMovieDetails>(slug);
     }
 
-    const data = await getMovieDetail(slug);
-    moviesLogger.debug(`Fetched '${slug}' live.`);
-
-    // We cache movies indefinitely, assuming they don't change.
-    // Be sure to configure redis with a maxmemory and an eviction policy or this will eat all your RAM
-    await cache.set(slug, data);
-
-    return data;
+    return inflightMovieDetail.run(slug, async () => {
+        const data = await getMovieDetail(slug);
+        moviesLogger.debug(`Fetched '${slug}' live.`);
+        // We cache movies indefinitely, assuming they don't change.
+        // Be sure to configure redis with a maxmemory and an eviction policy or this will eat all your RAM
+        await cache.set(slug, data);
+        return data;
+    });
 };

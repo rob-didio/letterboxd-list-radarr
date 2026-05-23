@@ -2,11 +2,14 @@ import pLimit from "p-limit";
 import { LetterboxdPoster } from "./list";
 import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
+import { InflightDedup } from "../cache/inflight";
 
 const PAGE_LIMIT = 10;
 
 // Cache popular for 120min
 const CACHE_TIMEOUT = 120 * 60;
+
+const inflightPopular = new InflightDedup<LetterboxdPoster[]>();
 
 export const getCachedFilmsPopular = async (
     slug: string
@@ -19,9 +22,11 @@ export const getCachedFilmsPopular = async (
         await cache.del(slug);
     }
 
-    const posters = await getFilmsPopular(slug);
-    await cache.set(slug, posters, CACHE_TIMEOUT);
-    return posters;
+    return inflightPopular.run(slug, async () => {
+        const posters = await getFilmsPopular(slug);
+        await cache.set(slug, posters, CACHE_TIMEOUT);
+        return posters;
+    });
 };
 
 export const getFilmsPopular = async (

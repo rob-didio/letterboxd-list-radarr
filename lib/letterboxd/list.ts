@@ -1,8 +1,11 @@
 import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
+import { InflightDedup } from "../cache/inflight";
 
 // Cache Lists for 30min
 const LIST_CACHE_TIMEOUT = 30 * 60;
+
+const inflightList = new InflightDedup<LetterboxdPoster[]>();
 
 export interface LetterboxdPoster {
     slug: string;
@@ -44,9 +47,11 @@ export const getListCached = async (
         await cache.del(listSlug);
     }
 
-    const posters = await getList(listSlug, onPage);
-    await cache.set(listSlug, posters, LIST_CACHE_TIMEOUT);
-    return posters;
+    return inflightList.run(listSlug, async () => {
+        const posters = await getList(listSlug, onPage);
+        await cache.set(listSlug, posters, LIST_CACHE_TIMEOUT);
+        return posters;
+    });
 };
 
 export const getListPaginated = async (
