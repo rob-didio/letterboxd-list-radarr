@@ -15,7 +15,6 @@ services:
             - REDIS_URL=redis://redis:6379
             - LB_SIDECAR_URL=http://sidecar:5001
             - PORT=5000
-        user: node
         command: sh -c "npm install && npm run watch"
         depends_on:
             - sidecar
