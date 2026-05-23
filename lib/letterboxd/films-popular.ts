@@ -1,6 +1,6 @@
 import pLimit from "p-limit";
 import { LetterboxdPoster } from "./list";
-import { getKanpai, LETTERBOXD_ORIGIN } from "./util";
+import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
 
 const PAGE_LIMIT = 10;
@@ -30,32 +30,15 @@ export const getFilmsPopular = async (
     const pageNumbers = Array.from({ length: PAGE_LIMIT }, (_, i) => i + 1);
     const limit = pLimit(2);
     const posters: LetterboxdPoster[] = [];
-    const path = slug.replace(/^\/films/, "");
 
     await Promise.all(
         pageNumbers.map(async (page) => {
-            const listPosters = await limit(() =>
-                getFilmsPopularPaginated(path, page)
+            const result = await limit(() =>
+                sidecar.getFilmsPopularPage(slug, page)
             );
-            posters.push(...listPosters);
+            posters.push(...result.posters);
         })
     );
 
     return posters;
-};
-
-export const getFilmsPopularPaginated = async (
-    path: string,
-    page: number
-): Promise<LetterboxdPoster[]> => {
-    return await getKanpai<LetterboxdPoster[]>(
-        `${LETTERBOXD_ORIGIN}/films/ajax/${path}page/${page}/`,
-        [
-            '.posteritem > .react-component, [data-component-class*="LazyPoster"], .poster-list [data-poster-url*="film"], .poster-grid [data-poster-url*="film"]',
-            {
-                slug: ["$", "[data-target-link]"],
-                title: ["$", "[data-item-name]"],
-            },
-        ]
-    );
 };

@@ -1,24 +1,35 @@
 # letterboxd-list-radarr
 
-Connect radarr to letterboxd.com lists
+Connect radarr to letterboxd.com lists.
+
+> ## Heads up — read before deploying
+>
+> In mid-January 2026 letterboxd.com put the site behind Cloudflare bot
+> protection, which blocks the original axios scraper with HTTP 403
+> "Just a moment..." challenges. In December 2025 letterboxd also
+> added clause 6.11 to their Terms of Service, which explicitly
+> prohibits scraping. The upstream project (issue #64) declared itself
+> unusable as a result.
+>
+> This fork keeps the project working **for personal self-hosted use only**
+> by adding a Python sidecar (`sidecar/`) that uses [`curl_cffi`](https://github.com/yifeikong/curl_cffi)'s
+> Chrome TLS-fingerprint impersonation to get past Cloudflare. **Do not
+> run a public hosted instance** — that's the part of the original
+> deployment that's no longer acceptable under letterboxd's ToS.
 
 ## Usage
-
-This service is hosted on render. That way you don't have to run the service yourself (but you can, see below).
 
 ### Radarr v3 and up
 
 1. Configure a new list in radarr, using the _Custom Lists_ provider.
-2. Set _List URL_ to `https://letterboxd-list-radarr.onrender.com` followed by the path to your list in letterboxd. For example: `https://letterboxd-list-radarr.onrender.com/screeny05/list/jackie-chan-the-definitive-list/`
+2. Set _List URL_ to the base URL of your self-hosted instance followed by the path to your list in letterboxd. For example: `http://your-host:5000/screeny05/list/jackie-chan-the-definitive-list/`
 3. Configure the rest of the settings to your liking
 4. Test & Save.
-
-If there are any problems with v3, feel free to open an issue.
 
 ### Radarr v2
 
 1. Configure a new list in radarr, using the _Radarr Lists_ provider.
-2. Set _Radarr API URL_ to `https://letterboxd-list-radarr.onrender.com` (or your custom one, if you choose self-hosting)
+2. Set _Radarr API URL_ to the base URL of your self-hosted instance.
 3. Set _Path to list_ to whatever appears in the URL for the list of your choosing after `letterboxd.com`.
 
 ### Supported Lists:
@@ -52,69 +63,64 @@ The following options are currently supported:
 -   `limit` - Return only a maximum number of movies. This is useful for very large lists like /films/popular/
 -   `errorOnEmpty` - The API will return a 404 error if the list is empty. If set to `false`, the API will return an empty list instead. Defaults to `true`.
 
-## FAQ
+## Architecture
 
-### The API always returns `Disallowed URL according to robots.txt`
+```
+Radarr ──HTTP──▶ Node service (this repo, port 5000)
+                      │
+                      │  internal HTTP via LB_SIDECAR_URL (default http://localhost:5001)
+                      ▼
+                 Python sidecar (sidecar/, FastAPI + curl_cffi)
+                      │
+                      ▼
+                 letterboxd.com  (Cloudflare-protected)
+```
 
-This means that letterboxd.com does not allow this URL to be crawled per their [robots.txt](https://letterboxd.com/robots.txt). Your URL probably contains sorting or expensive queries by letterboxd. Check the linked file to ensure your given URL does not match any of the listed paths.
+The Node service still does routing, Radarr-shape transformation, Redis
+caching, and chunked-JSON streaming. The Python sidecar is the only
+process that talks to letterboxd.com — it uses `curl_cffi.requests.Session(impersonate="chrome")`
+to spoof Chrome's JA3/JA4 TLS fingerprint, which is what Cloudflare's
+automated check actually keys on.
 
 ## Self-hosting
 
-### Using render
+> Reminder: personal use only. Do not run a public hosted instance.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+### Using docker-compose (recommended)
 
-It might take a few minutes after deploying to render, before the instance becomes available.
+```
+git clone git@github.com:rob-didio/letterboxd-list-radarr.git
+cd letterboxd-list-radarr
+docker-compose up -d --build
+```
 
-Be aware that render currently has a [free limit](https://render.com/docs/free) of 750h/month. That's exactly enough to run this single service for the whole month.
+This starts three containers: the Node web service (port 5000), the
+Python sidecar (port 5001), and redis. Your local instance will be
+available at `http://localhost:5000`.
 
-### Using heroku
+The `redis.conf` file can be used to configure your own redis settings. It
+comes with a memory-limit of 256mb by default — increase based on usage.
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
+### Single-image build
 
-If you are planning on running this instance for a lot of movies, be sure to set the correct cache-eviction policy for the redis:
+The root `Dockerfile` packages the Node app and Python sidecar into one
+image (using supervisord to run both processes) for hosting platforms
+that only deploy a single container. This is convenient but couples the
+two processes' lifecycles — the docker-compose split is preferred.
+
+### Render / Heroku
+
+`render.yaml` is provided as a starting point — it declares the Node
+web service, the Python sidecar (as a second Docker web service rooted
+in `sidecar/`), and a redis instance, and wires `LB_SIDECAR_URL` from
+the sidecar's internal hostname. You will need to fork this repo and
+point Render at your fork.
+
+If using a redis with limited memory, set the correct eviction policy:
 
 ```
 heroku redis:maxmemory <name-of-redis-instance> --policy allkeys-lfu
 ```
-
-### Using docker
-
-#### Pre-built docker-image
-
-You will get the newest image by pulling `screeny05/letterboxd-list-radarr:latest`. The image is available for both x86-64 and arm64.
-
-Here is an example of how to use the image with docker-compose:
-
-```
-version: "3.8"
-services:
-    web:
-        image: screeny05/letterboxd-list-radarr:latest
-        ports:
-            - 5000:5000
-        environment:
-            - REDIS_URL=redis://redis:6379
-        depends_on:
-            - redis
-    redis:
-        image: redis:6.0
-```
-
-For optimal configuration of redis, please check out the [redis.conf](redis.conf) file in this repository.
-
-#### Building it yourself
-
-```
-git clone git@github.com:screeny05/letterboxd-list-radarr.git
-cd letterboxd-list-radarr
-npm install
-docker-compose up -d
-```
-
-The file redis.conf can be used to configure your own settings for redis. It comes with a memory-limit of 256mb by default. You might want to increase that based on your usage.
-
-Your local instance will be available on port 5000 `http://localhost:5000`
 
 ### Local & development
 
@@ -123,11 +129,21 @@ You need a working redis-instance, which is used for caching movie- & list-data.
 Following environment-params are supported:
 
 -   `REDIS_URL` - A [redis connection string](https://github.com/ServiceStack/ServiceStack.Redis#redis-connection-strings) to your redis-instance
+-   `LB_SIDECAR_URL` - Base URL of the Python sidecar that talks to letterboxd. Defaults to `http://localhost:5001`
 -   `PORT` - The http-port which the application listens on
 -   `LOG_LEVEL` - Set to `debug` for more info. Defaults to `info`
--   `USER_AGENT` - Allows you to set your own user-agent string
 
-1. Clone this repo
-2. Make sure you have configured the env-variables
-3. `npm install`
-4. `npm run watch`
+You'll need both the Node service and the Python sidecar running:
+
+```bash
+# Terminal 1 — sidecar
+cd sidecar
+pip install .
+uvicorn app:app --port 5001
+
+# Terminal 2 — Node service (in repo root)
+npm install
+LB_SIDECAR_URL=http://localhost:5001 npm run watch
+```
+
+Or just `docker-compose up` to bring up all three services (web + sidecar + redis).

@@ -1,18 +1,34 @@
-# This docker-compose.yaml serves as development environment.
+# Development + recommended self-host topology: three containers (web, sidecar, redis).
 version: "3.8"
 services:
     web:
-        image: node:15.3.0-alpine3.10
+        image: node:18-alpine
         ports:
-            - 4200:4200
+            - 5000:5000
         working_dir: /home/node/app
         volumes:
             - ./:/home/node/app
+            # Anonymous volume so the container's Linux node_modules isn't shadowed
+            # by the host's macOS-built one.
+            - /home/node/app/node_modules
         environment:
             - REDIS_URL=redis://redis:6379
-            - PORT=4200
+            - LB_SIDECAR_URL=http://sidecar:5001
+            - PORT=5000
         user: node
-        command: npm run watch
+        command: sh -c "npm install && npm run watch"
+        depends_on:
+            - sidecar
+            - redis
+
+    sidecar:
+        build:
+            context: ./sidecar
+        ports:
+            - 5001:5001
+        # The sidecar performs Cloudflare bypass via curl_cffi's Chrome TLS impersonation.
+        # It is the only service that talks to letterboxd.com.
+
     redis:
         image: redis:6.0
         command: redis-server /usr/local/etc/redis/redis.conf --appendonly yes

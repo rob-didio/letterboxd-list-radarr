@@ -1,9 +1,4 @@
-import {
-    getKanpai,
-    getFirstMatch,
-    LETTERBOXD_ORIGIN,
-    LETTERBOXD_NEXT_PAGE_REGEX,
-} from "./util";
+import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
 
 // Cache Lists for 30min
@@ -58,21 +53,5 @@ export const getListPaginated = async (
     listSlug: string,
     page: number
 ): Promise<LetterboxdListPage> => {
-    return await getKanpai<LetterboxdListPage>(
-        `${LETTERBOXD_ORIGIN}${listSlug}page/${page}/`,
-        {
-            next: [
-                ".paginate-nextprev .next",
-                "[href]",
-                getFirstMatch(LETTERBOXD_NEXT_PAGE_REGEX),
-            ],
-            posters: [
-                '.posteritem > .react-component, [data-component-class*="LazyPoster"], .poster-list [data-poster-url*="film"], .poster-grid [data-poster-url*="film"]',
-                {
-                    slug: ["$", "[data-target-link]"],
-                    title: ["$", "[data-item-name]"],
-                },
-            ],
-        }
-    );
+    return await sidecar.getList(listSlug, page);
 };

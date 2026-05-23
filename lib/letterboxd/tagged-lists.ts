@@ -1,17 +1,12 @@
 import pLimit from "p-limit";
 import { logger } from "../logger";
-import { getListCached, LetterboxdPoster } from "./list"
-import { getFirstMatch, getKanpai, LETTERBOXD_ORIGIN, LETTERBOXD_NEXT_PAGE_REGEX } from "./util";
+import { getListCached, LetterboxdPoster } from "./list";
+import { sidecar } from "../sidecar/client";
 
 interface LetterboxdTaggedList {
     slug: string;
     title: string;
     moviesCount: string;
-}
-
-interface LetterboxdTaggedListsPage {
-    next: string;
-    lists: LetterboxdTaggedList[];
 }
 
 export const getTaggedLists = async (taggedListSlug: string): Promise<LetterboxdPoster[]> => {
@@ -20,9 +15,9 @@ export const getTaggedLists = async (taggedListSlug: string): Promise<Letterboxd
 
     let moviesCount = 0;
 
-    let nextPage: number|null = 1;
-    while(nextPage){
-        const result = await getTaggedListsPaginated(taggedListSlug, nextPage);
+    let nextPage: number | null = 1;
+    while (nextPage) {
+        const result = await sidecar.getTaggedListsPage(taggedListSlug, nextPage);
         lists.push(...result.lists);
         moviesCount += result.lists.reduce((a, list) => a + Number.parseInt(list.moviesCount), 0);
         nextPage = Number.parseInt(result.next);
@@ -38,15 +33,4 @@ export const getTaggedLists = async (taggedListSlug: string): Promise<Letterboxd
     }));
 
     return posters;
-};
-
-export const getTaggedListsPaginated = async (listSlug: string, page: number): Promise<LetterboxdTaggedListsPage> => {
-    return await getKanpai<LetterboxdTaggedListsPage>(`${LETTERBOXD_ORIGIN}${listSlug}page/${page}/`, {
-        next: ['.paginate-nextprev .next', '[href]', getFirstMatch(LETTERBOXD_NEXT_PAGE_REGEX)],
-        lists: ['.list-set .list', {
-            slug: ['a', '[href]'],
-            title: ['h2', 'text'],
-            moviesCount: ['.attribution .value', 'text', getFirstMatch(/(\d+)/)]
-        }]
-    });
 };

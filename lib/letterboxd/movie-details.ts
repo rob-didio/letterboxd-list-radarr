@@ -1,12 +1,9 @@
 import pLimit from "p-limit";
-import { getKanpai, getFirstMatch, LETTERBOXD_ORIGIN } from "./util";
+import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
 import { logger } from "../logger";
 
 const moviesLogger = logger.child({ module: "MoviesDetails" });
-
-const IMDB_REGEX = /imdb\.com\/title\/(.*?)(\/|$)/i;
-const TMDB_REGEX = /themoviedb\.org\/movie\/(.*?)(\/|$)/;
 
 export interface LetterboxdMovieDetails {
     slug: string;
@@ -49,26 +46,15 @@ export const getMoviesDetailCached = async (
     return movies.filter((movie): movie is LetterboxdMovieDetails => !!movie);
 };
 
-export const getMovieDetail = async (slug: string) => {
-    const details = await getKanpai<LetterboxdMovieDetails>(
-        `${LETTERBOXD_ORIGIN}${slug}`,
-        {
-            name: ".headline-1",
-            published: "a[href^='/films/year']",
-            imdb: [
-                '[data-track-action="imdb" i]',
-                "[href]",
-                getFirstMatch(IMDB_REGEX),
-            ],
-            tmdb: [
-                '[data-track-action="tmdb" i]',
-                "[href]",
-                getFirstMatch(TMDB_REGEX),
-            ],
-        }
-    );
-    details.slug = slug;
-    return details;
+export const getMovieDetail = async (slug: string): Promise<LetterboxdMovieDetails> => {
+    const data = await sidecar.getMovie(slug);
+    return {
+        slug,
+        name: data.name,
+        published: data.published,
+        imdb: data.imdb,
+        tmdb: data.tmdb || undefined,
+    };
 };
 
 export const getCachedMovieDetail = async (slug: string) => {
