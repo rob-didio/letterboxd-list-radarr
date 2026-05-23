@@ -23,9 +23,40 @@ export const getMoviesDetailCached = async (
 ) => {
     // we have to remove empty entries to prevent infinite loading
     slugs = slugs.filter((slug) => slug);
-    const limit = pLimit(concurrencyLimit);
-    const movies = await Promise.all(
+
+    // Phase 1: stream every movie already in Redis first. Without this the
+    // pLimit(7) pool below interleaves cached lookups with slow fresh fetches,
+    // which means a client that times out at T seconds may receive only the
+    // (random) subset of cached movies that happened to win pLimit slots.
+    const cachedResults = await Promise.all(
         slugs.map(async (slug) => {
+            try {
+                if (await cache.has(slug)) {
+                    return await cache.get<LetterboxdMovieDetails>(slug);
+                }
+            } catch {
+                // Treat redis errors as cache miss; fall through to phase 2.
+            }
+            return null;
+        })
+    );
+
+    const movies: LetterboxdMovieDetails[] = [];
+    const uncachedSlugs: string[] = [];
+    cachedResults.forEach((movie, i) => {
+        if (movie) {
+            movies.push(movie);
+            if (onDetail) onDetail(movie);
+        } else {
+            uncachedSlugs.push(slugs[i]);
+        }
+    });
+
+    // Phase 2: fetch the rest. Already-running fetches for the same slug are
+    // coalesced by InflightDedup inside getCachedMovieDetail.
+    const limit = pLimit(concurrencyLimit);
+    const fresh = await Promise.all(
+        uncachedSlugs.map(async (slug) => {
             const detail = await limit(async () => {
                 try {
                     return await getCachedMovieDetail(slug);
@@ -40,7 +71,11 @@ export const getMoviesDetailCached = async (
             return detail;
         })
     );
-    return movies.filter((movie): movie is LetterboxdMovieDetails => !!movie);
+
+    return [
+        ...movies,
+        ...fresh.filter((m): m is LetterboxdMovieDetails => !!m),
+    ];
 };
 
 export const getMovieDetail = async (slug: string): Promise<LetterboxdMovieDetails> => {

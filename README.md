@@ -130,6 +130,7 @@ Following environment-params are supported:
 
 -   `REDIS_URL` - A [redis connection string](https://github.com/ServiceStack/ServiceStack.Redis#redis-connection-strings) to your redis-instance
 -   `LB_SIDECAR_URL` - Base URL of the Python sidecar that talks to letterboxd. Defaults to `http://localhost:5001`
+-   `RESPONSE_DEADLINE_MS` - Max wall-clock time spent streaming before closing the response with whatever's in the buffer (default `90000`, just under Radarr's 100s `HttpRequest.RequestTimeout`). The background fetch keeps running after the deadline to warm Redis for the next retry.
 -   `PORT` - The http-port which the application listens on
 -   `LOG_LEVEL` - Set to `debug` for more info. Defaults to `info`
 

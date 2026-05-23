@@ -15,6 +15,16 @@ const appLogger = logger.child({ module: "App" });
 
 const PORT = process.env.PORT || 5000;
 
+// Maximum wall-clock time we'll spend filling a response before closing it
+// with whatever we have. After that the underlying fetch continues in the
+// background (warming Redis), and the next retry pulls more from cache.
+//
+// Default 90s: Radarr's HttpRequest.RequestTimeout is 100s, so we want to
+// close the response cleanly with a valid `]` before Radarr declares the
+// request dead. Override via RESPONSE_DEADLINE_MS env var.
+const RESPONSE_DEADLINE_MS =
+    Number.parseInt(process.env.RESPONSE_DEADLINE_MS || "") || 90_000;
+
 const app = express();
 const server = app.listen(PORT, () =>
     appLogger.info(`Listening on port ${PORT}`)
@@ -81,10 +91,35 @@ app.get(/(.*)/, async (req, res) => {
 
     const movieSlugs = posters.map((poster) => poster.slug);
 
+    // Once the soft deadline fires we close the response with `]` so the
+    // client gets a valid JSON array containing whatever streamed by then.
+    // The fetch loop keeps running afterwards to warm Redis for the next
+    // retry; further onMovie pushes are dropped via this flag.
+    let responseClosed = false;
+    let deadlineFired = false;
+    const closeResponse = (reason: "done" | "deadline") => {
+        if (responseClosed) return;
+        responseClosed = true;
+        if (reason === "deadline") {
+            deadlineFired = true;
+            appLogger.warn(
+                `Response deadline (${RESPONSE_DEADLINE_MS}ms) reached for ${slug}; returning partial list and continuing fetch in background.`
+            );
+        }
+        chunk.end();
+    };
+    const deadlineTimer = setTimeout(
+        () => closeResponse("deadline"),
+        RESPONSE_DEADLINE_MS
+    );
+
     const onMovie = (movie: LetterboxdMovieDetails) => {
         // If there's no tmdb-id it may be a tv-show
         // radarr throws an error, if an entry is missing an id
         if (!movie.tmdb) {
+            return;
+        }
+        if (deadlineFired) {
             return;
         }
         // chunk.push is a no-op once res.writable flips false, so this is safe
@@ -96,14 +131,18 @@ app.get(/(.*)/, async (req, res) => {
         await getMoviesDetailCached(movieSlugs, 7, onMovie);
     } catch (e: any) {
         appLogger.error(`Failed to fetch movies for ${slug} - ${e?.message}`);
-        chunk.fail(404, e?.message);
+        clearTimeout(deadlineTimer);
+        if (!responseClosed) {
+            chunk.fail(404, e?.message);
+            responseClosed = true;
+        }
         return;
     }
 
     isFinished = true;
-    if (isClientConnected) {
-        chunk.end();
-    } else {
+    clearTimeout(deadlineTimer);
+    closeResponse("done");
+    if (deadlineFired || !isClientConnected) {
         appLogger.info(`Background fetch for ${slug} finished; cache warmed.`);
     }
 });
