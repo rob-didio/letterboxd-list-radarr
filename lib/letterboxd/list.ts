@@ -1,13 +1,11 @@
-import {
-    getKanpai,
-    getFirstMatch,
-    LETTERBOXD_ORIGIN,
-    LETTERBOXD_NEXT_PAGE_REGEX,
-} from "./util";
+import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
+import { InflightDedup } from "../cache/inflight";
 
 // Cache Lists for 30min
 const LIST_CACHE_TIMEOUT = 30 * 60;
+
+const inflightList = new InflightDedup<LetterboxdPoster[]>();
 
 export interface LetterboxdPoster {
     slug: string;
@@ -49,30 +47,16 @@ export const getListCached = async (
         await cache.del(listSlug);
     }
 
-    const posters = await getList(listSlug, onPage);
-    await cache.set(listSlug, posters, LIST_CACHE_TIMEOUT);
-    return posters;
+    return inflightList.run(listSlug, async () => {
+        const posters = await getList(listSlug, onPage);
+        await cache.set(listSlug, posters, LIST_CACHE_TIMEOUT);
+        return posters;
+    });
 };
 
 export const getListPaginated = async (
     listSlug: string,
     page: number
 ): Promise<LetterboxdListPage> => {
-    return await getKanpai<LetterboxdListPage>(
-        `${LETTERBOXD_ORIGIN}${listSlug}page/${page}/`,
-        {
-            next: [
-                ".paginate-nextprev .next",
-                "[href]",
-                getFirstMatch(LETTERBOXD_NEXT_PAGE_REGEX),
-            ],
-            posters: [
-                '.posteritem > .react-component, [data-component-class*="LazyPoster"], .poster-list [data-poster-url*="film"], .poster-grid [data-poster-url*="film"]',
-                {
-                    slug: ["$", "[data-target-link]"],
-                    title: ["$", "[data-item-name]"],
-                },
-            ],
-        }
-    );
+    return await sidecar.getList(listSlug, page);
 };

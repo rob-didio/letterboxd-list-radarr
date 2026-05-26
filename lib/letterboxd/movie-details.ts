@@ -1,12 +1,12 @@
 import pLimit from "p-limit";
-import { getKanpai, getFirstMatch, LETTERBOXD_ORIGIN } from "./util";
+import { sidecar } from "../sidecar/client";
 import * as cache from "../cache/index";
+import { InflightDedup } from "../cache/inflight";
 import { logger } from "../logger";
 
 const moviesLogger = logger.child({ module: "MoviesDetails" });
 
-const IMDB_REGEX = /imdb\.com\/title\/(.*?)(\/|$)/i;
-const TMDB_REGEX = /themoviedb\.org\/movie\/(.*?)(\/|$)/;
+const inflightMovieDetail = new InflightDedup<LetterboxdMovieDetails>();
 
 export interface LetterboxdMovieDetails {
     slug: string;
@@ -19,20 +19,45 @@ export interface LetterboxdMovieDetails {
 export const getMoviesDetailCached = async (
     slugs: string[],
     concurrencyLimit: number = 7,
-    onDetail?: (movie: LetterboxdMovieDetails) => void,
-    shouldCancel?: () => boolean
+    onDetail?: (movie: LetterboxdMovieDetails) => void
 ) => {
     // we have to remove empty entries to prevent infinite loading
     slugs = slugs.filter((slug) => slug);
-    const limit = pLimit(concurrencyLimit);
-    const movies = await Promise.all(
-        slugs.map(async (slug) => {
-            const detail = await limit(async () => {
-                // Cancel running operations in case client connection closed.
-                if (shouldCancel && shouldCancel()) {
-                    return;
-                }
 
+    // Phase 1: stream every movie already in Redis first. Without this the
+    // pLimit(7) pool below interleaves cached lookups with slow fresh fetches,
+    // which means a client that times out at T seconds may receive only the
+    // (random) subset of cached movies that happened to win pLimit slots.
+    const cachedResults = await Promise.all(
+        slugs.map(async (slug) => {
+            try {
+                if (await cache.has(slug)) {
+                    return await cache.get<LetterboxdMovieDetails>(slug);
+                }
+            } catch {
+                // Treat redis errors as cache miss; fall through to phase 2.
+            }
+            return null;
+        })
+    );
+
+    const movies: LetterboxdMovieDetails[] = [];
+    const uncachedSlugs: string[] = [];
+    cachedResults.forEach((movie, i) => {
+        if (movie) {
+            movies.push(movie);
+            if (onDetail) onDetail(movie);
+        } else {
+            uncachedSlugs.push(slugs[i]);
+        }
+    });
+
+    // Phase 2: fetch the rest. Already-running fetches for the same slug are
+    // coalesced by InflightDedup inside getCachedMovieDetail.
+    const limit = pLimit(concurrencyLimit);
+    const fresh = await Promise.all(
+        uncachedSlugs.map(async (slug) => {
+            const detail = await limit(async () => {
                 try {
                     return await getCachedMovieDetail(slug);
                 } catch (e: any) {
@@ -46,29 +71,22 @@ export const getMoviesDetailCached = async (
             return detail;
         })
     );
-    return movies.filter((movie): movie is LetterboxdMovieDetails => !!movie);
+
+    return [
+        ...movies,
+        ...fresh.filter((m): m is LetterboxdMovieDetails => !!m),
+    ];
 };
 
-export const getMovieDetail = async (slug: string) => {
-    const details = await getKanpai<LetterboxdMovieDetails>(
-        `${LETTERBOXD_ORIGIN}${slug}`,
-        {
-            name: ".headline-1",
-            published: "a[href^='/films/year']",
-            imdb: [
-                '[data-track-action="imdb" i]',
-                "[href]",
-                getFirstMatch(IMDB_REGEX),
-            ],
-            tmdb: [
-                '[data-track-action="tmdb" i]',
-                "[href]",
-                getFirstMatch(TMDB_REGEX),
-            ],
-        }
-    );
-    details.slug = slug;
-    return details;
+export const getMovieDetail = async (slug: string): Promise<LetterboxdMovieDetails> => {
+    const data = await sidecar.getMovie(slug);
+    return {
+        slug,
+        name: data.name,
+        published: data.published,
+        imdb: data.imdb,
+        tmdb: data.tmdb || undefined,
+    };
 };
 
 export const getCachedMovieDetail = async (slug: string) => {
@@ -77,12 +95,12 @@ export const getCachedMovieDetail = async (slug: string) => {
         return await cache.get<LetterboxdMovieDetails>(slug);
     }
 
-    const data = await getMovieDetail(slug);
-    moviesLogger.debug(`Fetched '${slug}' live.`);
-
-    // We cache movies indefinitely, assuming they don't change.
-    // Be sure to configure redis with a maxmemory and an eviction policy or this will eat all your RAM
-    await cache.set(slug, data);
-
-    return data;
+    return inflightMovieDetail.run(slug, async () => {
+        const data = await getMovieDetail(slug);
+        moviesLogger.debug(`Fetched '${slug}' live.`);
+        // We cache movies indefinitely, assuming they don't change.
+        // Be sure to configure redis with a maxmemory and an eviction policy or this will eat all your RAM
+        await cache.set(slug, data);
+        return data;
+    });
 };

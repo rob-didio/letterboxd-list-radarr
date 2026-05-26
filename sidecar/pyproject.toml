@@ -1,0 +1,20 @@
+[project]
+name = "letterboxd-sidecar"
+version = "0.1.0"
+description = "Letterboxd scraping sidecar with Cloudflare bypass via curl_cffi TLS impersonation"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "curl_cffi>=0.7",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.1",
+    "letterboxdpy>=4.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["app"]
